@@ -2,7 +2,7 @@
 
 一个本地运行、先预演再写入的 HOI4 State 合并工具。它只重新分配现有 Province 到保留 State，不编辑 `provinces.bmp`、`definition.csv` 或 Province ID。
 
-当前版本：`0.1.6`（MVP）。请先在副本上测试，并用游戏的 `-debug` 模式做最终验证。
+当前版本：`0.1.7`（MVP）。请先在副本上测试，并用游戏的 `-debug` 模式做最终验证。
 
 ## 它会处理什么
 

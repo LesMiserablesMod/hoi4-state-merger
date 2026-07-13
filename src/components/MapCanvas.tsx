@@ -5,7 +5,7 @@ import { boundaryRunsToPath } from '../lib/boundaries'
 import { parseDefinition } from '../lib/definition'
 import type { MapFillMode } from '../lib/mapColors'
 import {
-  bitmapPointFromClient, clampMapZoom, MAX_MAP_ZOOM, panForZoomAtPoint, wheelZoom,
+  bitmapPointFromClient, clampMapZoom, mapViewportTransform, MAX_MAP_ZOOM, panForZoomAtPoint, wheelZoom,
 } from '../lib/viewport'
 
 export type SelectionMode = 'pan' | 'keeper' | 'source'
@@ -197,18 +197,9 @@ export function MapCanvas({
     return () => observer.disconnect()
   }, [])
 
-  const fitScale = Math.min(
-    1,
-    viewportSize.width / Math.max(1, mapSize.width),
-    viewportSize.height / Math.max(1, mapSize.height),
-  )
-  const centerX = mapSize.width / 2
-  const centerY = mapSize.height / 2
-  const fittedWidth = mapSize.width * fitScale
-  const fittedHeight = mapSize.height * fitScale
-  const canvasTranslateX = viewportSize.width / 2 + view.pan.x - fittedWidth * view.zoom / 2
-  const canvasTranslateY = viewportSize.height / 2 + view.pan.y - fittedHeight * view.zoom / 2
-  const boundaryTransform = `translate(${viewportSize.width / 2 + view.pan.x} ${viewportSize.height / 2 + view.pan.y}) scale(${view.zoom * fitScale}) translate(${-centerX} ${-centerY})`
+  const mapTransform = mapViewportTransform(viewportSize, mapSize, view.zoom, view.pan)
+  const canvasTransform = `matrix(${mapTransform.scale}, 0, 0, ${mapTransform.scale}, ${mapTransform.translateX}, ${mapTransform.translateY})`
+  const boundaryTransform = `matrix(${mapTransform.scale} 0 0 ${mapTransform.scale} ${mapTransform.translateX} ${mapTransform.translateY})`
 
   return (
     <section className="map-panel">
@@ -240,9 +231,9 @@ export function MapCanvas({
           style={{
             left: 0,
             top: 0,
-            width: fittedWidth,
-            height: fittedHeight,
-            transform: `translate(${canvasTranslateX}px, ${canvasTranslateY}px) scale(${view.zoom})`,
+            width: mapSize.width,
+            height: mapSize.height,
+            transform: canvasTransform,
           }}
           onClick={pick}
           onPointerDown={pointerDown}

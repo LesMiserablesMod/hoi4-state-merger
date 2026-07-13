@@ -3,6 +3,18 @@ export interface Point {
   y: number
 }
 
+export interface Size {
+  width: number
+  height: number
+}
+
+export interface MapViewportTransform {
+  fitScale: number
+  scale: number
+  translateX: number
+  translateY: number
+}
+
 export const MIN_MAP_ZOOM = 0.5
 export const MAX_MAP_ZOOM = 24
 
@@ -12,6 +24,26 @@ export function clampMapZoom(value: number): number {
 
 export function wheelZoom(currentZoom: number, deltaY: number): number {
   return clampMapZoom(currentZoom * Math.exp(-deltaY * 0.002))
+}
+
+export function mapViewportTransform(
+  viewport: Size,
+  bitmap: Size,
+  zoom: number,
+  pan: Point,
+): MapViewportTransform {
+  const fitScale = Math.min(
+    1,
+    viewport.width / Math.max(1, bitmap.width),
+    viewport.height / Math.max(1, bitmap.height),
+  )
+  const scale = fitScale * zoom
+  return {
+    fitScale,
+    scale,
+    translateX: viewport.width / 2 + pan.x - bitmap.width * scale / 2,
+    translateY: viewport.height / 2 + pan.y - bitmap.height * scale / 2,
+  }
 }
 
 export function panForZoomAtPoint(

@@ -20,4 +20,16 @@ describe('State boundary extraction', () => {
   it('returns no boundary for an empty ocean grid', () => {
     expect(extractStateBoundaryRuns(new Uint32Array(4), 2, 2)).toHaveLength(0)
   })
+
+  it('places an internal horizontal boundary on the exact shared pixel edge', () => {
+    const runs = extractStateBoundaryRuns(Uint32Array.from([
+      1, 1,
+      2, 2,
+    ]), 2, 2)
+    const tuples = Array.from({ length: runs.length / 4 }, (_, index) =>
+      [...runs.slice(index * 4, index * 4 + 4)],
+    )
+
+    expect(tuples).toContainEqual([0, 1, 2, 1])
+  })
 })

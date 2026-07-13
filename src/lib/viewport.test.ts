@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { bitmapPointFromClient, MAX_MAP_ZOOM, panForZoomAtPoint, wheelZoom } from './viewport'
+import {
+  bitmapPointFromClient, mapViewportTransform, MAX_MAP_ZOOM, panForZoomAtPoint, wheelZoom,
+} from './viewport'
 
 describe('map viewport zoom', () => {
   it('keeps the map coordinate under the pointer fixed while zooming', () => {
@@ -31,5 +33,18 @@ describe('map viewport zoom', () => {
       rect,
       { width: 720, height: 360 },
     )).toEqual({ x: 42, y: 17 })
+  })
+
+  it('uses one direct bitmap-to-viewport transform at 2400% zoom', () => {
+    const viewport = { width: 997, height: 643 }
+    const bitmap = { width: 5632, height: 2048 }
+    const pan = { x: 37, y: -19 }
+    const transform = mapViewportTransform(viewport, bitmap, MAX_MAP_ZOOM, pan)
+
+    expect(transform.scale).toBe(transform.fitScale * MAX_MAP_ZOOM)
+    expect(transform.translateX + bitmap.width * transform.scale / 2)
+      .toBeCloseTo(viewport.width / 2 + pan.x)
+    expect(transform.translateY + bitmap.height * transform.scale / 2)
+      .toBeCloseTo(viewport.height / 2 + pan.y)
   })
 })

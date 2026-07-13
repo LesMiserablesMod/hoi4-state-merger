@@ -77,8 +77,6 @@ select { height: 26px; padding: 0 7px; color: #c8cdca; background: #182225; bord
   height: 100%;
   pointer-events: none;
   overflow: hidden;
-  /* A crisp 1px SVG stroke on an integer Y is rasterized onto the lower pixel row. */
-  transform: translateY(-.5px);
 }
 .map-boundaries path { fill: none; stroke: #11191f; stroke-width: 1; vector-effect: non-scaling-stroke; shape-rendering: crispEdges; }
 .map-canvas.pan-mode { cursor: grab; }
