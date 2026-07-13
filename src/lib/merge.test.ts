@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ModWorkspace, SourceFile, StateRecord } from '../types'
 import { buildStateIdMap, createMergePlan } from './merge'
+import { assignments, blockAtoms, blockValue, parsePdx } from './pdx'
 import { remapBuildingsFile, rewriteBuildingsFile, rewriteStateReferences } from './references'
 import { parseStateFile } from './stateParser'
 
@@ -27,6 +28,7 @@ function stateFile(id: number): SourceFile {
       ${id * 10} = { naval_base = 1 }
     }
     victory_points = { ${id * 10} ${id} }
+    victory_points = { ${id * 10 + 1} ${id + 1} }
   }
   provinces = { ${id * 10} ${id * 10 + 1} }
   local_supplies = 0.2
@@ -243,6 +245,31 @@ describe('merge plan', () => {
     expect(plan.patches.some((patch) => patch.path === 'map/definition.csv')).toBe(false)
   })
 
+  it('writes every merged Victory Point as an independent two-atom block', () => {
+    const plan = createMergePlan(fixtureWorkspace(), 2, [3, 4], {
+      category: 'strict',
+      infrastructure: 'max',
+      otherStateBuildings: 'sum',
+    })
+    const keeperAfter = plan.patches.find((patch) => patch.path.includes('2-fixture'))?.after ?? ''
+    const state = blockValue(parsePdx(keeperAfter), 'state')
+    const history = state ? blockValue(state, 'history') : undefined
+    const victoryPoints = history ? assignments(history, 'victory_points') : []
+    expect(victoryPoints).toHaveLength(6)
+    expect(victoryPoints.map((item) => item.value.kind === 'block' ? blockAtoms(item.value) : []))
+      .toEqual([
+        ['20', '2'],
+        ['21', '3'],
+        ['30', '3'],
+        ['31', '4'],
+        ['40', '4'],
+        ['41', '5'],
+      ])
+    expect(victoryPoints.every((item) =>
+      item.value.kind === 'block' && blockAtoms(item.value).length === 2,
+    )).toBe(true)
+  })
+
   it('discards source political and dated history without blocking the merge', () => {
     const workspace = fixtureWorkspace()
     const oldSource = workspace.files.get('history/states/3-fixture.txt')!
@@ -289,5 +316,15 @@ describe('merge plan', () => {
       category: 'keeper', infrastructure: 'max', otherStateBuildings: 'sum',
     })
     expect(plan.conflicts.find((item) => item.id === 'strategic-region')?.severity).toBe('block')
+  })
+
+  it('blocks a Victory Point that references a Province outside its State', () => {
+    const workspace = fixtureWorkspace()
+    workspace.states.find((state) => state.id === 3)!.victoryPoints[9999] = 10
+    const plan = createMergePlan(workspace, 2, [3], {
+      category: 'keeper', infrastructure: 'max', otherStateBuildings: 'sum',
+    })
+
+    expect(plan.conflicts.find((item) => item.id === 'victory-point-3-9999')?.severity).toBe('block')
   })
 })

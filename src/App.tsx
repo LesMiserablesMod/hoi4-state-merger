@@ -150,7 +150,7 @@ export default function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand"><ShieldCheck size={22} /><strong>HOI4 State Merger</strong><span>v0.1.7</span></div>
+        <div className="brand"><ShieldCheck size={22} /><strong>HOI4 State Merger</strong><span>v0.1.8</span></div>
         <div className="path-box"><FolderOpen size={16} /><span>{workspace.name}</span></div>
         <div className="top-actions">
           <button onClick={openMod}><FolderOpen size={16} />打开 MOD</button>

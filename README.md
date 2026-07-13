@@ -2,7 +2,7 @@
 
 一个本地运行、先预演再写入的 HOI4 State 合并工具。它只重新分配现有 Province 到保留 State，不编辑 `provinces.bmp`、`definition.csv` 或 Province ID。
 
-当前版本：`0.1.7`（MVP）。请先在副本上测试，并用游戏的 `-debug` 模式做最终验证。
+当前版本：`0.1.8`（MVP）。请先在副本上测试，并用游戏的 `-debug` 模式做最终验证。
 
 ## 它会处理什么
 
@@ -80,7 +80,7 @@ npm run build
 npm run preview
 ```
 
-自动化测试覆盖 State ID 填洞、token 级引用迁移、`air_wings` 数字键、真实 `map/buildings.txt` 格式与碰撞映射、阻断校验、恒定细边界提取和基础合并计划。
+自动化测试覆盖 State ID 填洞、token 级引用迁移、`air_wings` 数字键、Victory Point 独立二元块、真实 `map/buildings.txt` 格式与碰撞映射、阻断校验、恒定细边界提取和基础合并计划。
 
 ## 许可证
 

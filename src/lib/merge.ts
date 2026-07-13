@@ -3,7 +3,7 @@ import type {
   PdxBlock, ReferenceHit, StateRecord,
 } from '../types'
 import {
-  applyReplacements, assignments, blockValue, firstAssignment, renderNumericBlock,
+  applyReplacements, assignments, blockAtoms, blockValue, firstAssignment, renderNumericBlock,
   replaceAssignmentValue, type Replacement,
 } from './pdx'
 import { rewriteBuildingsFile, rewriteStateReferences } from './references'
@@ -72,13 +72,10 @@ function renderBuildings(
   return `{\n${[...stateLines, ...provinceLines].join('\n')}\n${indent.slice(0, -1)}}`
 }
 
-function renderVictoryPoints(values: Record<number, number>, indent: string): string {
-  const pairs = Object.entries(values)
+function renderVictoryPointBlocks(values: Record<number, number>, indent: string): string[] {
+  return Object.entries(values)
     .toSorted(([left], [right]) => Number(left) - Number(right))
-    .map(([province, value]) => `${province} ${value}`)
-  const lines: string[] = []
-  for (let index = 0; index < pairs.length; index += 8) lines.push(`${indent}${pairs.slice(index, index + 8).join('  ')}`)
-  return `{\n${lines.join('\n')}\n${indent.slice(0, -1)}}`
+    .map(([province, value]) => `{\n${indent}\t${province} ${value}\n${indent}}`)
 }
 
 function insertBeforeClose(block: PdxBlock, text: string): Replacement {
@@ -92,6 +89,23 @@ function replaceOrInsertBlock(
   if (existing.length === 0) return [insertBeforeClose(block, `${indent}${key} = ${renderedValue}`)]
   return [
     { start: existing[0].value.start, end: existing[0].value.end, text: renderedValue },
+    ...existing.slice(1).map((item) => ({ start: item.start, end: item.end, text: '' })),
+  ]
+}
+
+function replaceOrInsertRepeatedBlocks(
+  block: PdxBlock, key: string, renderedValues: string[], indent: string,
+): Replacement[] {
+  const existing = assignments(block, key)
+  if (renderedValues.length === 0) {
+    return existing.map((item) => ({ start: item.start, end: item.end, text: '' }))
+  }
+  const rendered = renderedValues
+    .map((value, index) => `${index === 0 ? '' : `\n${indent}${key} = `}${value}`)
+    .join('')
+  if (existing.length === 0) return [insertBeforeClose(block, `${indent}${key} = ${rendered}`)]
+  return [
+    { start: existing[0].value.start, end: existing[0].value.end, text: rendered },
     ...existing.slice(1).map((item) => ({ start: item.start, end: item.end, text: '' })),
   ]
 }
@@ -139,8 +153,8 @@ function mergeKeeperText(
     replacements.push(...replaceOrInsertBlock(
       history, 'buildings', renderBuildings(resultBuildings, provinceBlocks, '\t\t\t'), '\t\t',
     ))
-    replacements.push(...replaceOrInsertBlock(
-      history, 'victory_points', renderVictoryPoints(victoryPoints, '\t\t\t'), '\t\t',
+    replacements.push(...replaceOrInsertRepeatedBlocks(
+      history, 'victory_points', renderVictoryPointBlocks(victoryPoints, '\t\t'), '\t\t',
     ))
   }
   if (policies.category === 'keeper') {
@@ -232,6 +246,12 @@ function validate(
     sources.map((state) => state.id),
   )
   for (const state of selected) {
+    for (const province of Object.keys(state.victoryPoints).map(Number)) {
+      if (!state.provinceIds.includes(province)) addConflict(
+        conflicts, 'block', `victory-point-${state.id}-${province}`, '胜利点 Province 归属异常',
+        `State ${state.id} 的胜利点引用 Province ${province}，但该 Province 不属于它。`, [state.id],
+      )
+    }
     for (const province of Object.keys(state.provinceBuildingBlocks).map(Number)) {
       if (!state.provinceIds.includes(province)) addConflict(
         conflicts, 'block', `building-${state.id}-${province}`, '省级建筑归属异常',
@@ -524,6 +544,34 @@ export function verifyAppliedMerge(
   }
   if (provinceFailures.length > 0) {
     failures.push(`Province 最终归属不一致（${provinceFailures.length}）：${provinceFailures.slice(0, 8).join('、')}`)
+  }
+
+  const expectedVictoryPoints: Record<number, number> = {}
+  const selectedIds = new Set([plan.keeperId, ...plan.sourceIds])
+  for (const state of before.states) {
+    if (selectedIds.has(state.id)) Object.assign(expectedVictoryPoints, state.victoryPoints)
+  }
+  const finalKeeper = after.states.find((state) => state.id === plan.keeperFinalId)
+  if (!finalKeeper) {
+    failures.push(`最终保留 State ${plan.keeperFinalId} 不存在，无法校验胜利点`)
+  } else {
+    const expectedEntries = Object.entries(expectedVictoryPoints)
+      .toSorted(([left], [right]) => Number(left) - Number(right))
+    const actualEntries = Object.entries(finalKeeper.victoryPoints)
+      .toSorted(([left], [right]) => Number(left) - Number(right))
+    if (JSON.stringify(actualEntries) !== JSON.stringify(expectedEntries)) {
+      failures.push(`Victory Point 结果不一致：预期 ${expectedEntries.length} 个，实际 ${actualEntries.length} 个`)
+    }
+    const history = blockValue(finalKeeper.stateBlock, 'history')
+    const victoryPointAssignments = history ? assignments(history, 'victory_points') : []
+    const malformed = victoryPointAssignments.filter((item) =>
+      item.value.kind !== 'block' || blockAtoms(item.value).length !== 2,
+    )
+    if (victoryPointAssignments.length !== expectedEntries.length || malformed.length > 0) {
+      failures.push(
+        `Victory Point 块格式错误：应为 ${expectedEntries.length} 个独立二元块，实际 ${victoryPointAssignments.length} 个，异常 ${malformed.length} 个`,
+      )
+    }
   }
 
   const fileFailures: string[] = []
