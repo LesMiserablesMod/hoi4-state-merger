@@ -118,6 +118,11 @@ export interface BuildingsAudit {
   parsedRows: number
   changedRows: number
   selectedRows: number
+  selectedAirBaseLocatorRows: number
+  finalKeeperAirBaseLocatorRows: number
+  removedAirBaseLocatorLines: BuildingsLineIssue[]
+  preexistingDuplicateAirBaseLocatorLines: BuildingsLineIssue[]
+  duplicateAirBaseLocatorLines: BuildingsLineIssue[]
   unparsedLines: BuildingsLineIssue[]
   invalidBeforeStateLines: BuildingsLineIssue[]
   invalidAfterStateLines: BuildingsLineIssue[]
@@ -139,4 +144,7 @@ export interface MergePlan {
   resultManpower: number
   resultResources: Record<string, number>
   resultBuildings: Record<string, number>
+  requestedAirBaseLevel: number
+  airBaseLevelCap: number
+  airBaseLevelCapSource: string
 }

@@ -3,10 +3,14 @@ import type {
   PdxBlock, ReferenceHit, StateRecord,
 } from '../types'
 import {
-  applyReplacements, assignments, blockAtoms, blockValue, firstAssignment, renderNumericBlock,
+  applyReplacements, assignments, atomValue, blockAtoms, blockValue, firstAssignment, parsePdx, renderNumericBlock,
   replaceAssignmentValue, type Replacement,
 } from './pdx'
-import { rewriteBuildingsFile, rewriteStateReferences } from './references'
+import {
+  findAirBaseLocatorLines, findDuplicateAirBaseLocatorLines, rewriteBuildingsFile, rewriteStateReferences,
+} from './references'
+
+const DEFAULT_AIR_BASE_LEVEL_CAP = 10
 
 function addConflict(
   conflicts: MergeConflict[], severity: MergeConflict['severity'], id: string,
@@ -44,15 +48,88 @@ function sumRecords(records: Array<Record<string, number>>): Record<string, numb
   return result
 }
 
-function combineBuildings(states: StateRecord[], policies: MergePolicies): Record<string, number> {
+function resolveAirBaseLevelCap(workspace: ModWorkspace): {
+  level: number
+  source: string
+  invalidDefinitions: string[]
+} {
+  const definitionFiles = [...workspace.files.values()]
+    .filter((file) => /^common\/buildings\/.*\.txt$/i.test(file.path))
+    .toSorted((left, right) => left.path.localeCompare(right.path))
+  const parsedFiles = definitionFiles.map((file) => ({ file, root: parsePdx(file.text) }))
+  const variables = new Map<string, string>()
+  for (const { root } of parsedFiles) {
+    const containers = [
+      root,
+      ...assignments(root, 'buildings')
+        .filter((item) => item.value.kind === 'block')
+        .map((item) => item.value as PdxBlock),
+    ]
+    for (const container of containers) {
+      for (const variable of assignments(container).filter((item) => item.key.startsWith('@'))) {
+        if (variable.value.kind === 'atom') variables.set(variable.key, variable.value.value)
+      }
+    }
+  }
+  let candidate: { raw: string; source: string } | undefined
+  for (const { file, root } of parsedFiles) {
+    const containers = [
+      root,
+      ...assignments(root, 'buildings')
+        .filter((item) => item.value.kind === 'block')
+        .map((item) => item.value as PdxBlock),
+    ]
+    for (const container of containers) {
+      for (const definition of assignments(container).filter((item) => item.key.toLowerCase() === 'air_base')) {
+        if (definition.value.kind !== 'block') continue
+        const levelCap = blockValue(definition.value, 'level_cap')
+        const rawStateMax = levelCap ? atomValue(levelCap, 'state_max') : undefined
+        if (rawStateMax !== undefined) candidate = { raw: rawStateMax, source: file.path }
+      }
+    }
+  }
+  if (candidate) {
+    let resolvedRaw = candidate.raw
+    const seen = new Set<string>()
+    while (resolvedRaw.startsWith('@') && variables.has(resolvedRaw) && !seen.has(resolvedRaw)) {
+      seen.add(resolvedRaw)
+      resolvedRaw = variables.get(resolvedRaw)!
+    }
+    const stateMax = Number(resolvedRaw)
+    if (Number.isInteger(stateMax) && stateMax > 0) {
+      return { level: stateMax, source: candidate.source, invalidDefinitions: [] }
+    }
+  }
+  const fallback = {
+    level: DEFAULT_AIR_BASE_LEVEL_CAP,
+    source: `HOI4 默认值 ${DEFAULT_AIR_BASE_LEVEL_CAP}（MOD 内未找到可解析的覆盖定义）`,
+  }
+  return {
+    ...fallback,
+    invalidDefinitions: candidate ? [`${candidate.source}: state_max = ${candidate.raw}`] : [],
+  }
+}
+
+function combineBuildings(
+  states: StateRecord[],
+  policies: MergePolicies,
+  airBaseLevelCap: number,
+): { buildings: Record<string, number>; requestedAirBaseLevel: number } {
   const keys = new Set(states.flatMap((state) => Object.keys(state.stateBuildings)))
   const result: Record<string, number> = {}
+  let requestedAirBaseLevel = 0
   for (const key of keys) {
     const values = states.map((state) => state.stateBuildings[key] ?? 0)
     const policy = key === 'infrastructure' ? policies.infrastructure : policies.otherStateBuildings
-    result[key] = policy === 'max' ? Math.max(...values) : values.reduce((sum, value) => sum + value, 0)
+    const combined = policy === 'max' ? Math.max(...values) : values.reduce((sum, value) => sum + value, 0)
+    if (key === 'air_base') {
+      requestedAirBaseLevel = combined
+      result[key] = Math.min(combined, airBaseLevelCap)
+    } else {
+      result[key] = combined
+    }
   }
-  return result
+  return { buildings: result, requestedAirBaseLevel }
 }
 
 function renderAssignments(values: Record<string, number>, indent: string): string {
@@ -310,6 +387,11 @@ function emptyBuildingsAudit(): BuildingsAudit {
     parsedRows: 0,
     changedRows: 0,
     selectedRows: 0,
+    selectedAirBaseLocatorRows: 0,
+    finalKeeperAirBaseLocatorRows: 0,
+    removedAirBaseLocatorLines: [],
+    preexistingDuplicateAirBaseLocatorLines: [],
+    duplicateAirBaseLocatorLines: [],
     unparsedLines: [],
     invalidBeforeStateLines: [],
     invalidAfterStateLines: [],
@@ -334,6 +416,12 @@ function addBuildingsAuditConflicts(conflicts: MergeConflict[], audit: Buildings
     detail: string
     issues: BuildingsLineIssue[]
   }> = [
+    {
+      id: 'map-buildings-duplicate-air-base',
+      title: '同一 State 仍有多个 air_base 地图定位器',
+      detail: '空军基地是 State 级单定位设施；合并结果中每个 State 最多只能保留一条定位记录。',
+      issues: audit.duplicateAirBaseLocatorLines,
+    },
     {
       id: 'map-buildings-unparsed',
       title: 'map/buildings.txt 含无法解析的记录',
@@ -375,6 +463,34 @@ function addBuildingsAuditConflicts(conflicts: MergeConflict[], audit: Buildings
       `${check.detail} 共 ${check.issues.length} 行：${issueSummary(check.issues)}`,
     )
   }
+  if (audit.preexistingDuplicateAirBaseLocatorLines.length > 0) addConflict(
+    conflicts,
+    'warning',
+    'map-buildings-preexisting-duplicate-air-base',
+    '输入中已有重复 air_base 地图定位器',
+    `检测到 ${audit.preexistingDuplicateAirBaseLocatorLines.length} 条位于重复组中的记录；属于本次合并组的重复会自动折叠，其他重复会继续作为阻断项列出：${issueSummary(audit.preexistingDuplicateAirBaseLocatorLines)}`,
+  )
+  if (audit.removedAirBaseLocatorLines.length > 0) addConflict(
+    conflicts,
+    'info',
+    'map-buildings-air-base-deduplicated',
+    '已折叠空军基地地图定位器',
+    `同一最终 State 只保留一个 air_base 定位器，优先保留目标 State 原坐标；已移除 ${audit.removedAirBaseLocatorLines.length} 条：${issueSummary(audit.removedAirBaseLocatorLines)}`,
+  )
+  if (audit.selectedAirBaseLocatorRows === 0) addConflict(
+    conflicts,
+    'block',
+    'map-buildings-selected-air-base-missing',
+    '所选 State 缺少 air_base 地图定位器',
+    '目标和来源 State 都没有可保留的 air_base 坐标，工具无法安全生成机场地图位置。请先修复 map/buildings.txt。',
+  )
+  if (audit.selectedAirBaseLocatorRows > 0 && audit.finalKeeperAirBaseLocatorRows !== 1) addConflict(
+    conflicts,
+    'block',
+    'map-buildings-final-air-base-count',
+    '最终 State 的 air_base 地图定位器数量不为 1',
+    `预期 1 条，实际 ${audit.finalKeeperAirBaseLocatorRows} 条。`,
+  )
 }
 
 export function createMergePlan(
@@ -396,11 +512,45 @@ export function createMergePlan(
   const conflicts = validate(workspace, selected, keeper, policies)
   validateIdMapping(workspace, sourceIds, idMap, finalKeeperId, conflicts)
   const resultResources = sumRecords(selected.map((state) => state.resources))
-  const resultBuildings = combineBuildings(selected, policies)
+  const airBaseLevelCap = resolveAirBaseLevelCap(workspace)
+  if (airBaseLevelCap.invalidDefinitions.length > 0) addConflict(
+    conflicts,
+    'warning',
+    'air-base-level-cap-invalid',
+    '无法解析 MOD 的空军基地等级上限',
+    `未能解析 air_base state_max，将使用默认上限 ${DEFAULT_AIR_BASE_LEVEL_CAP}：${airBaseLevelCap.invalidDefinitions.slice(0, 8).join('；')}`,
+  )
+  const invalidAirBaseStates = selected.filter((state) => {
+    const level = state.stateBuildings.air_base
+    return level !== undefined && (!Number.isInteger(level) || level < 0)
+  })
+  if (invalidAirBaseStates.length > 0) addConflict(
+    conflicts,
+    'block',
+    'air-base-level-invalid',
+    '所选 State 的空军基地等级不是非负整数',
+    `异常：${invalidAirBaseStates.map((state) => `State ${state.id} = ${state.stateBuildings.air_base}`).join('；')}`,
+    invalidAirBaseStates.map((state) => state.id),
+  )
+  const combinedBuildings = combineBuildings(selected, policies, airBaseLevelCap.level)
+  const resultBuildings = combinedBuildings.buildings
+  if (combinedBuildings.requestedAirBaseLevel > airBaseLevelCap.level) addConflict(
+    conflicts,
+    'warning',
+    'air-base-level-capped',
+    '空军基地等级已按上限截断',
+    `合并策略计算出 air_base = ${combinedBuildings.requestedAirBaseLevel}，结果写为 ${airBaseLevelCap.level}；上限来源：${airBaseLevelCap.source}。`,
+    selected.map((state) => state.id),
+  )
   const resultManpower = selected.reduce((sum, state) => sum + state.manpower, 0)
   const patchMap = new Map<string, FilePatch>()
   const referenceHits: ReferenceHit[] = []
   let buildingsAudit = emptyBuildingsAudit()
+  const sourceSet = new Set(sourceIds)
+  const validBeforeStateIds = new Set(workspace.states.map((state) => state.id))
+  const validAfterStateIds = new Set(workspace.states
+    .filter((state) => !sourceSet.has(state.id))
+    .map((state) => idMap.get(state.id) ?? state.id))
 
   const keeperAfter = mergeKeeperText(keeper, selected, finalKeeperId, policies, resultResources, resultBuildings)
   upsertPatch(patchMap, {
@@ -452,24 +602,20 @@ export function createMergePlan(
       '无法同步迁移建筑、港口、补给中心和特殊设施的地图定位器，因此禁止应用合并。',
     )
   } else {
-    const sourceSet = new Set(sourceIds)
-    const validBeforeStateIds = new Set(workspace.states.map((state) => state.id))
-    const validAfterStateIds = new Set(workspace.states
-      .filter((state) => !sourceSet.has(state.id))
-      .map((state) => idMap.get(state.id) ?? state.id))
     const rewritten = rewriteBuildingsFile(
       buildings.text,
       idMap,
       validBeforeStateIds,
       validAfterStateIds,
       new Set(selected.map((state) => state.id)),
+      keeperId,
     )
     buildingsAudit = rewritten.audit
     referenceHits.push(...rewritten.hits)
     addBuildingsAuditConflicts(conflicts, buildingsAudit)
     if (rewritten.text !== buildings.text) upsertPatch(patchMap, {
       path: buildings.path, action: 'modify', before: buildings.text, after: rewritten.text,
-      summary: `按第 1 列旧 State ID 单次迁移 ${buildingsAudit.changedRows} 个建筑/港口定位器；其余字段保持不变`,
+      summary: `按第 1 列旧 State ID 单次迁移定位器，并折叠 ${buildingsAudit.removedAirBaseLocatorLines.length} 个重复 air_base 定位器；其他字段保持不变`,
     })
     if (
       buildingsAudit.unparsedLines.length === 0
@@ -477,17 +623,23 @@ export function createMergePlan(
       && buildingsAudit.invalidAfterStateLines.length === 0
       && buildingsAudit.mismatchedLines.length === 0
       && buildingsAudit.suffixMismatchLines.length === 0
+      && buildingsAudit.duplicateAirBaseLocatorLines.length === 0
+      && buildingsAudit.selectedAirBaseLocatorRows > 0
+      && buildingsAudit.finalKeeperAirBaseLocatorRows === 1
     ) addConflict(
       conflicts,
       'info',
       'map-buildings-verified',
       'map/buildings.txt 逐行迁移通过',
-      `已解析 ${buildingsAudit.parsedRows}/${buildingsAudit.totalRows} 条定位器，迁移 ${buildingsAudit.changedRows} 条；其中所选 State 关联 ${buildingsAudit.selectedRows} 条。`,
+      `已解析 ${buildingsAudit.parsedRows}/${buildingsAudit.totalRows} 条定位器，变更 ${buildingsAudit.changedRows} 条、折叠 air_base ${buildingsAudit.removedAirBaseLocatorLines.length} 条；其中所选 State 关联 ${buildingsAudit.selectedRows} 条。`,
     )
   }
 
   for (const file of workspace.files.values()) {
-    if (patchMap.get(file.path)?.action === 'delete' || file.path === 'map/buildings.txt') continue
+    if (
+      patchMap.get(file.path)?.action === 'delete'
+      || file.path === 'map/buildings.txt'
+    ) continue
     const existing = patchMap.get(file.path)
     const base = existing?.after ?? file.text
     const rewritten = rewriteStateReferences(file.path, base, idMap)
@@ -513,6 +665,9 @@ export function createMergePlan(
     resultManpower,
     resultResources,
     resultBuildings,
+    requestedAirBaseLevel: combinedBuildings.requestedAirBaseLevel,
+    airBaseLevelCap: airBaseLevelCap.level,
+    airBaseLevelCapSource: airBaseLevelCap.source,
   }
 }
 
@@ -571,6 +726,33 @@ export function verifyAppliedMerge(
       failures.push(
         `Victory Point 块格式错误：应为 ${expectedEntries.length} 个独立二元块，实际 ${victoryPointAssignments.length} 个，异常 ${malformed.length} 个`,
       )
+    }
+    const expectedAirBaseLevel = plan.resultBuildings.air_base ?? 0
+    const actualAirBaseLevel = finalKeeper.stateBuildings.air_base ?? 0
+    if (actualAirBaseLevel !== expectedAirBaseLevel) {
+      failures.push(`空军基地等级不一致：预期 ${expectedAirBaseLevel}，实际 ${actualAirBaseLevel}`)
+    }
+    if (!Number.isInteger(actualAirBaseLevel) || actualAirBaseLevel < 0) {
+      failures.push(`空军基地等级 ${actualAirBaseLevel} 不是非负整数`)
+    }
+    if (actualAirBaseLevel > plan.airBaseLevelCap) {
+      failures.push(`空军基地等级 ${actualAirBaseLevel} 超过上限 ${plan.airBaseLevelCap}`)
+    }
+  }
+
+  const buildingsAfter = after.files.get('map/buildings.txt')
+  if (!buildingsAfter) {
+    failures.push('写入后缺少 map/buildings.txt，无法校验空军基地定位器')
+  } else {
+    const duplicateAirBaseLocators = findDuplicateAirBaseLocatorLines(buildingsAfter.text)
+    if (duplicateAirBaseLocators.length > 0) {
+      failures.push(
+        `写入后同一 State 仍有重复 air_base 定位器（${duplicateAirBaseLocators.length} 条）：${issueSummary(duplicateAirBaseLocators)}`,
+      )
+    }
+    const finalKeeperAirBaseLocators = findAirBaseLocatorLines(buildingsAfter.text, plan.keeperFinalId)
+    if (plan.buildingsAudit.selectedAirBaseLocatorRows > 0 && finalKeeperAirBaseLocators.length !== 1) {
+      failures.push(`写入后最终 State ${plan.keeperFinalId} 的 air_base 定位器应为 1 条，实际 ${finalKeeperAirBaseLocators.length} 条`)
     }
   }
 

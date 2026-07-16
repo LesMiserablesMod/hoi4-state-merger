@@ -108,6 +108,13 @@ function reportPayload(plan: MergePlan, modName: string) {
       manpower: plan.resultManpower,
       resources: plan.resultResources,
       buildings: plan.resultBuildings,
+      airBase: {
+        requestedLevel: plan.requestedAirBaseLevel,
+        finalLevel: plan.resultBuildings.air_base ?? 0,
+        levelCap: plan.airBaseLevelCap,
+        levelCapSource: plan.airBaseLevelCapSource,
+        removedDuplicateLocators: plan.buildingsAudit.removedAirBaseLocatorLines.length,
+      },
     },
     conflicts: plan.conflicts,
     buildingsAudit: plan.buildingsAudit,

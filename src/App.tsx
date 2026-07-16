@@ -98,7 +98,7 @@ export default function App() {
       const blocks = nextPlan.conflicts.filter((item) => item.severity === 'block').length
       setNotice(blocks
         ? `Dry Run 完成：发现 ${blocks} 个阻断问题，尚不能应用。`
-        : `Dry Run 完成：${nextPlan.patches.length} 个文件将变化，已迁移 ${nextPlan.buildingsAudit.changedRows} 个地图定位器。`)
+        : `Dry Run 完成：${nextPlan.patches.length} 个文件将变化，定位器变更 ${nextPlan.buildingsAudit.changedRows} 条，其中折叠重复 air_base ${nextPlan.buildingsAudit.removedAirBaseLocatorLines.length} 条。`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
     } finally {
@@ -139,7 +139,7 @@ export default function App() {
       setKeeperId(undefined)
       setSourceIds([])
       setPlan(undefined)
-      setNotice('合并已应用；文件、State ID、Province 归属和 map/buildings.txt 均通过写后校验。请用 -debug 启动游戏做最终验证。')
+      setNotice('合并已应用；文件、State ID、Province 归属、空军基地等级和地图定位器均通过写后校验。请用 -debug 启动游戏做最终验证。')
     } catch (error) {
       setNotice(`应用失败：${error instanceof Error ? error.message : String(error)}。若提示回滚未完成，请使用刚保存的 ZIP 恢复。`)
     } finally {
@@ -150,7 +150,7 @@ export default function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand"><ShieldCheck size={22} /><strong>HOI4 State Merger</strong><span>v0.1.8</span></div>
+        <div className="brand"><ShieldCheck size={22} /><strong>HOI4 State Merger</strong><span>v0.1.9</span></div>
         <div className="path-box"><FolderOpen size={16} /><span>{workspace.name}</span></div>
         <div className="top-actions">
           <button onClick={openMod}><FolderOpen size={16} />打开 MOD</button>

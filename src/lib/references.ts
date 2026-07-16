@@ -209,16 +209,68 @@ interface BuildingsRow {
   prefix: string
   stateId: number
   suffix: string
+  buildingType: string
+  partIndex: number
 }
 
-function parseBuildingsRow(raw: string, line: number): BuildingsRow | undefined {
-  const match = raw.match(/^(\uFEFF?\s*)(\d+)(\s*;.*)$/)
+function parseBuildingsRow(raw: string, line: number, partIndex = -1): BuildingsRow | undefined {
+  const match = raw.match(/^(\uFEFF?\s*)(\d+)(\s*;\s*([^;]+?)\s*;.*)$/)
   if (!match) return undefined
-  return { line, raw, prefix: match[1], stateId: Number(match[2]), suffix: match[3] }
+  return {
+    line,
+    raw,
+    prefix: match[1],
+    stateId: Number(match[2]),
+    suffix: match[3],
+    buildingType: match[4].trim().toLowerCase(),
+    partIndex,
+  }
 }
 
 function issue(row: BuildingsRow, expectedStateId?: number): BuildingsLineIssue {
   return { line: row.line, text: row.raw.trim(), stateId: row.stateId, expectedStateId }
+}
+
+function indexedBuildingsRows(parts: string[]): BuildingsRow[] {
+  const rows: BuildingsRow[] = []
+  let physicalLine = 1
+  for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+    const part = parts[partIndex]
+    if (/^(?:\r\n|\n|\r)$/.test(part)) {
+      physicalLine += 1
+      continue
+    }
+    const trimmed = part.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const row = parseBuildingsRow(part, physicalLine, partIndex)
+    if (row) rows.push(row)
+  }
+  return rows
+}
+
+function duplicateAirBaseLocatorIssues(rows: BuildingsRow[]): BuildingsLineIssue[] {
+  const byState = new Map<number, BuildingsRow[]>()
+  for (const row of rows) {
+    if (row.buildingType !== 'air_base') continue
+    const stateRows = byState.get(row.stateId) ?? []
+    stateRows.push(row)
+    byState.set(row.stateId, stateRows)
+  }
+  return [...byState.values()]
+    .filter((stateRows) => stateRows.length > 1)
+    .flatMap((stateRows) => stateRows.map((row) => issue(row)))
+}
+
+export function findDuplicateAirBaseLocatorLines(text: string): BuildingsLineIssue[] {
+  const parts = text.split(/(\r\n|\n|\r)/)
+  return duplicateAirBaseLocatorIssues(indexedBuildingsRows(parts))
+}
+
+export function findAirBaseLocatorLines(text: string, stateId: number): BuildingsLineIssue[] {
+  const parts = text.split(/(\r\n|\n|\r)/)
+  return indexedBuildingsRows(parts)
+    .filter((row) => row.buildingType === 'air_base' && row.stateId === stateId)
+    .map((row) => issue(row))
 }
 
 export function rewriteBuildingsFile(
@@ -227,12 +279,28 @@ export function rewriteBuildingsFile(
   validBeforeStateIds = new Set<number>(),
   validAfterStateIds = new Set<number>(),
   selectedStateIds = new Set<number>(),
+  keeperStateId?: number,
 ): { text: string; hits: ReferenceHit[]; audit: BuildingsAudit } {
+  const parts = text.split(/(\r\n|\n|\r)/)
+  const indexedRows = indexedBuildingsRows(parts)
+  const preexistingDuplicateAirBaseLocatorLines = duplicateAirBaseLocatorIssues(indexedRows)
+  const selectedAirBaseRows = keeperStateId === undefined ? [] : indexedRows.filter((row) =>
+    row.buildingType === 'air_base' && selectedStateIds.has(row.stateId),
+  )
+  const keptAirBaseRow = selectedAirBaseRows.find((row) => row.stateId === keeperStateId)
+    ?? selectedAirBaseRows[0]
+  const removedAirBaseParts = new Set(selectedAirBaseRows
+    .filter((row) => row.partIndex !== keptAirBaseRow?.partIndex)
+    .map((row) => row.partIndex))
+  const removedAirBaseSeparators = new Set([...removedAirBaseParts]
+    .map((partIndex) => partIndex + 1)
+    .filter((partIndex) => /^(?:\r\n|\n|\r)$/.test(parts[partIndex] ?? '')))
   const unparsedLines: BuildingsLineIssue[] = []
   const invalidBeforeStateLines: BuildingsLineIssue[] = []
   const invalidAfterStateLines: BuildingsLineIssue[] = []
   const mismatchedLines: BuildingsLineIssue[] = []
   const suffixMismatchLines: BuildingsLineIssue[] = []
+  const removedAirBaseLocatorLines: BuildingsLineIssue[] = []
   const hits: ReferenceHit[] = []
   const mappingCounts = new Map<string, BuildingsMappingAudit>()
   let totalRows = 0
@@ -241,15 +309,15 @@ export function rewriteBuildingsFile(
   let selectedRows = 0
   let physicalLine = 1
 
-  const rewritten = text.split(/(\r\n|\n|\r)/).map((part) => {
+  const rewritten = parts.map((part, partIndex) => {
     if (/^(?:\r\n|\n|\r)$/.test(part)) {
       physicalLine += 1
-      return part
+      return removedAirBaseSeparators.has(partIndex) ? '' : part
     }
     const trimmed = part.trim()
     if (!trimmed || trimmed.startsWith('#')) return part
     totalRows += 1
-    const beforeRow = parseBuildingsRow(part, physicalLine)
+    const beforeRow = parseBuildingsRow(part, physicalLine, partIndex)
     if (!beforeRow) {
       unparsedLines.push({ line: physicalLine, text: trimmed })
       return part
@@ -261,6 +329,32 @@ export function rewriteBuildingsFile(
     }
 
     const expectedStateId = idMap.get(beforeRow.stateId) ?? beforeRow.stateId
+    const mappingKey = `${beforeRow.stateId}:${expectedStateId}`
+    const addMapping = () => {
+      if (expectedStateId === beforeRow.stateId) return
+      const mapping = mappingCounts.get(mappingKey) ?? {
+        before: beforeRow.stateId, after: expectedStateId, rows: 0,
+      }
+      mapping.rows += 1
+      mappingCounts.set(mappingKey, mapping)
+    }
+    if (removedAirBaseParts.has(partIndex)) {
+      changedRows += 1
+      addMapping()
+      removedAirBaseLocatorLines.push(issue(beforeRow, expectedStateId))
+      hits.push({
+        path: 'map/buildings.txt',
+        line: physicalLine,
+        before: beforeRow.raw.trim(),
+        after: '（已移除；同一最终 State 仅保留一个 air_base 定位器）',
+        status: 'updated',
+        keyPath: 'map/buildings.txt > air_base 定位器',
+        rule: '合并后每个 State 只保留一个空军基地地图定位器',
+        oldId: beforeRow.stateId,
+        newId: expectedStateId,
+      })
+      return ''
+    }
     const afterRaw = expectedStateId === beforeRow.stateId
       ? part
       : `${beforeRow.prefix}${expectedStateId}${beforeRow.suffix}`
@@ -276,12 +370,7 @@ export function rewriteBuildingsFile(
     }
     if (expectedStateId !== beforeRow.stateId) {
       changedRows += 1
-      const mappingKey = `${beforeRow.stateId}:${expectedStateId}`
-      const mapping = mappingCounts.get(mappingKey) ?? {
-        before: beforeRow.stateId, after: expectedStateId, rows: 0,
-      }
-      mapping.rows += 1
-      mappingCounts.set(mappingKey, mapping)
+      addMapping()
       hits.push({
         path: 'map/buildings.txt',
         line: physicalLine,
@@ -296,6 +385,11 @@ export function rewriteBuildingsFile(
     }
     return afterRaw
   }).join('')
+  const duplicateAirBaseLocatorLines = findDuplicateAirBaseLocatorLines(rewritten)
+  const finalKeeperStateId = keeperStateId === undefined ? undefined : (idMap.get(keeperStateId) ?? keeperStateId)
+  const finalKeeperAirBaseLocatorRows = finalKeeperStateId === undefined
+    ? 0
+    : findAirBaseLocatorLines(rewritten, finalKeeperStateId).length
 
   return {
     text: rewritten,
@@ -306,6 +400,11 @@ export function rewriteBuildingsFile(
       parsedRows,
       changedRows,
       selectedRows,
+      selectedAirBaseLocatorRows: selectedAirBaseRows.length,
+      finalKeeperAirBaseLocatorRows,
+      removedAirBaseLocatorLines,
+      preexistingDuplicateAirBaseLocatorLines,
+      duplicateAirBaseLocatorLines,
       unparsedLines,
       invalidBeforeStateLines,
       invalidAfterStateLines,

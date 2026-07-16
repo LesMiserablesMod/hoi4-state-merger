@@ -53,7 +53,12 @@ export function MergeInspector({
             <dt>Province 数量</dt><dd>{plan?.totalProvinces ?? '—'}（不改 ID）</dd>
             <dt>人口</dt><dd>{plan?.resultManpower.toLocaleString() ?? '—'}</dd>
             <dt>资源类型</dt><dd>{plan ? Object.keys(plan.resultResources).length : '—'}</dd>
-            <dt>地图定位器</dt><dd>{plan ? `${plan.buildingsAudit.changedRows} 迁移 / ${plan.buildingsAudit.parsedRows} 已校验` : '—'}</dd>
+            <dt>空军基地</dt><dd>{plan
+              ? `${plan.resultBuildings.air_base ?? 0} / 上限 ${plan.airBaseLevelCap}${plan.requestedAirBaseLevel > plan.airBaseLevelCap ? `（由 ${plan.requestedAirBaseLevel} 截断）` : ''}`
+              : '—'}</dd>
+            <dt>地图定位器</dt><dd>{plan
+              ? `${plan.buildingsAudit.changedRows} 变更 / ${plan.buildingsAudit.removedAirBaseLocatorLines.length} 个重复机场已折叠`
+              : '—'}</dd>
           </dl>
         </section>
         <section className="inspector-section policies">

@@ -2,21 +2,22 @@
 
 一个本地运行、先预演再写入的 HOI4 State 合并工具。它只重新分配现有 Province 到保留 State，不编辑 `provinces.bmp`、`definition.csv` 或 Province ID。
 
-当前版本：`0.1.8`（MVP）。请先在副本上测试，并用游戏的 `-debug` 模式做最终验证。
+当前版本：`0.1.9`（MVP）。请先在副本上测试，并用游戏的 `-debug` 模式做最终验证。
 
 ## 它会处理什么
 
 - 默认让同一 State 使用来自 `provinces.bmp` / `definition.csv` 的稳定代表 RGB；可切换查看真实 Province RGB，并以恒定细描边标出 State 边界。
 - 支持以鼠标位置为中心的滚轮缩放，范围为 50%–2400%，并显示当前倍率。
 - 合并 Province 列表、人口、资源、本地补给、胜利点、州级建筑和 Province 级建筑块。
+- 合并实际空军基地等级时读取 MOD 内 `air_base > level_cap > state_max`，找不到覆盖定义时使用 HOI4 默认上限 10；求和超限会截断并在 Dry Run 中明确提示。
 - 保持 Province ID、地形、铁路、补给节点、相邻关系及 Province 像素边界不变。
 - 删除来源 State 后，用尾部 State 填洞，保持 State ID 从 `1..N` 连续。
 - 使用 PDX token/AST 精确迁移已注册的 State 变量，例如 `capital = 123`、`target_state = 123`、`state:123`；注释、字符串、Province、年份和普通数字不会匹配。
-- 按 `map/buildings.txt` 第一列的旧 State ID 做一次性迁移；第二列建筑类型、坐标、旋转和最后一列相邻海洋 Province 全部保持不变。
+- 按 `map/buildings.txt` 第一列的旧 State ID 做一次性迁移；同一最终 State 的 `air_base` 定位器只保留一个，优先使用目标 State 原坐标，目标没有时使用最早的来源坐标。这里的 `air_base` 只是地图坐标预留，不代表开局已建成机场；港口、堡垒、工厂等其他多定位记录不会被去重。
 - 迁移 `history/units/** > air_wings > StateID = {}` 这类数字左键，并将其他未分类数字块键列为带完整父路径的精确提示。
 - 未注册但名称明确包含 `state` 的整数变量只列为非阻断提示；不再做裸 ID 全局搜索。
 - Dry Run 显示文件补丁、执行检查、精确引用和最终合并结果；可以导出 JSON 报告。
-- 真正写入前强制保存 ZIP 备份并复核 Dry Run 文件快照；写入后校验文件内容、State ID、逐 Province 归属和建筑定位器，失败时自动回滚。
+- 真正写入前强制保存 ZIP 备份并复核 Dry Run 文件快照；写入后校验文件内容、State ID、逐 Province 归属、空军基地等级上限和 `air_base` 定位器唯一性，失败时自动回滚。
 
 ## 安全阻断
 
@@ -25,7 +26,8 @@
 - 当前 State ID 已经不连续，或 Province 同时属于多个 State。
 - Province 级建筑块指向不属于该 State 的 Province。
 - 一个文件中包含多个 `state = {}` block。MVP 要求每个 State 独立文件。
-- 缺少或无法完整解析 `map/buildings.txt`，或定位器在映射前后引用不存在的 State。
+- 缺少或无法完整解析 `map/buildings.txt`，所选 State 全都没有 `air_base` 定位器，或定位器在映射前后引用不存在的 State。
+- 合并结果中同一 State 仍存在多条 `air_base` 地图定位器。
 - 所选 State 不属于同一个 Strategic Region。
 
 默认采用“保留目标州 history + 合并物理数据”：来源 State 的政治、日期和未知 history 随来源文件删除，不再阻止合并；Province、人口、资源、建筑和胜利点仍会合并。State Category 不一致默认提示并保留目标值；跨 Strategic Region 会阻断。工具也会对局部覆盖 MOD 给出警告，因为删除文件可能让上游 MOD 的同名 State 重新生效。
@@ -80,7 +82,7 @@ npm run build
 npm run preview
 ```
 
-自动化测试覆盖 State ID 填洞、token 级引用迁移、`air_wings` 数字键、Victory Point 独立二元块、真实 `map/buildings.txt` 格式与碰撞映射、阻断校验、恒定细边界提取和基础合并计划。
+自动化测试覆盖 State ID 填洞、token 级引用迁移、`air_wings` 数字键、Victory Point 独立二元块、空军基地等级上限与单定位器折叠、真实 `map/buildings.txt` 格式与碰撞映射、写后回滚触发、阻断校验、恒定细边界提取和基础合并计划。
 
 ## 许可证
 

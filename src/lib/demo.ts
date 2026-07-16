@@ -95,10 +95,14 @@ export function createDemoWorkspace(): ModWorkspace {
   }
   const buildingsDemo: SourceFile = {
     path: 'map/buildings.txt',
-    text: names.map((_, index) => `${index + 1};industrial_complex;${80 + index * 70}.00;0.00;${90 + index * 30}.00;0.00;-1`).join('\n') + '\n',
+    text: names.flatMap((_, index) => [
+      `${index + 1};air_base;${70 + index * 70}.00;0.00;${80 + index * 30}.00;0.00;-1`,
+      `${index + 1};industrial_complex;${80 + index * 70}.00;0.00;${90 + index * 30}.00;0.00;-1`,
+    ]).join('\n') + '\n',
     handle: dummyFileHandle,
   }
-  const files = new Map([...stateFiles, descriptor, referenceDemo, buildingsDemo].map((file) => [file.path, file]))
+  const files = new Map([...stateFiles, descriptor, referenceDemo, buildingsDemo]
+    .map((file) => [file.path, file]))
   const states = stateFiles.flatMap(parseStateFile)
   for (const state of states) state.strategicRegionIds = [1]
   const provinceToState = new Map<number, number>()
